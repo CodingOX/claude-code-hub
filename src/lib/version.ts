@@ -30,9 +30,15 @@ export const APP_VERSION = normalizeVersionForDisplay(
 /**
  * GitHub 仓库信息
  * 用于获取最新版本
+ *
+ * 注意：这里指向的是本仓库（CodingOX fork），不是上游 ding113。
+ * 原因是本仓库自行构建和发布镜像，若继续指向上游，Dashboard 会一直提示
+ * “发现新版本”（对比的其实是上游的 release），而升级到上游版本并不适用。
+ * 指向自身后行为变成：本仓库未发布 release 时静默不提示；一旦本仓库发布了
+ * 更高版本的 release，提示会自动恢复，成为本仓库自己的升级提醒。
  */
 export const GITHUB_REPO = {
-  owner: "ding113",
+  owner: "CodingOX",
   repo: "claude-code-hub",
 };
 
