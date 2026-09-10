@@ -102,11 +102,13 @@ jobs:
           push: true
           build-args: |
             APP_VERSION=${{ steps.meta.outputs.version }}
+          # 注意：tags 是字面块标量（|），块内以 # 开头的行会被当成真 tag 传给 buildx，
+          # 所以说明性文字只能写在块外。下面 6 个 tag 是同一份构建产物同时推给两个 registry，
+          # 两边 tag 完全等价、互为备份，不额外增加构建时间。
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}
             ${{ steps.meta.outputs.image }}:latest
-            # Docker Hub 同镜像同标签，只是换个仓库地址（两边 tag 完全等价，互为备份）
             ${{ vars.DOCKERHUB_USERNAME }}/claude-code-hub:${{ steps.meta.outputs.version }}
             ${{ vars.DOCKERHUB_USERNAME }}/claude-code-hub:${{ steps.meta.outputs.sha_tag }}
             ${{ vars.DOCKERHUB_USERNAME }}/claude-code-hub:latest
