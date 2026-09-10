@@ -38,10 +38,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          # 本流水线不用 git 凭证（推 GHCR 走 GITHUB_TOKEN），关掉凭证持久化，
-          # 避免 token 被写进 .git/config 后随构建上下文带进构建缓存
-          persist-credentials: false
+        # 刻意不设置 persist-credentials: false：本仓库存在一个悬空的 docs-site 子模块
+        # 链接（index 里是 160000，但 .gitmodules 不存在），关闭凭证持久化后 checkout 会在
+        # 清理阶段的 git submodule foreach 上直接失败。保持默认值与仓库其余 24 处一致。
 
       - name: Resolve image name and version
         id: meta
