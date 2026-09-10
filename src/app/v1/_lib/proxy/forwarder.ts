@@ -2150,6 +2150,10 @@ export class ProxyForwarder {
                   framesSeen: gate.framesSeen,
                   prefixChunks: gate.prefixChunks.length,
                   readerDone: gate.readerDone,
+                  // 决策预算耗尽后的 fail-open 提交：门控认不出该上游的帧形态。
+                  // 这类记录是发现分类器盲区（新字段 / 新协议版本）的唯一线索，因此
+                  // 用 gate 上的廉价布尔、与 captureCommitMarker 解耦，高并发下也不丢。
+                  prebufferOverflow: gate.prebufferOverflow,
                   ...(gateChainAudit
                     ? {
                         commitEventName: gateChainAudit.eventName,
@@ -5326,6 +5330,11 @@ export class ProxyForwarder {
             // F1 门控（enforce 或 Replay owner）：胜者判定从「首个非空字节」升级为
             // 「首个有效内容帧」。
             // 级联阈值计时器保持不动——内容慢的 attempt 不提交，自动触发下一候选竞速。
+            //
+            // 注意 fail-open 提交（gate.prebufferOverflow）也算「已提交」：门控认不出该上游
+            // 帧形态时它已经握着满预算前缀并即将向客户端透传，此时把它判负会重新制造
+            // 「健康上游被判死」的事故。代价是「胜者 = 首个有效内容」在 fail-open 下放宽为
+            // 「首个可透传的流」——这是有意为之，串行路径同理。
             const forceCodexResponsesStream = shouldForceCodexResponsesStreamHandling(
               attempt.session,
               response
@@ -5387,6 +5396,17 @@ export class ProxyForwarder {
                   gateWaitMs: Date.now() - gateStartedAt,
                 };
               }
+              // 与串行路径对齐的提交日志：竞速路径此前没有这条线，导致高并发下
+              // 「门控认不出上游帧形态」完全不可观测。prebufferOverflow 与
+              // captureCommitMarker 解耦，因此高并发下仍然稳定输出。
+              logger.info("ProxyForwarder: Stream content gate committed (hedge attempt)", {
+                providerId: attempt.provider.id,
+                providerName: attempt.provider.name,
+                framesSeen: gate.framesSeen,
+                prefixChunks: gate.prefixChunks.length,
+                gateWaitMs: Date.now() - gateStartedAt,
+                prebufferOverflow: gate.prebufferOverflow,
+              });
               // 直接保留原门控 chunks；若本 attempt 落败，drain 时补回前缀里的 usage。
               attempt.billingPrefixChunks = gate.prefixChunks;
               attempt.gatePrebufferLease = gate.prebufferLease;

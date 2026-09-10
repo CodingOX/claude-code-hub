@@ -209,29 +209,107 @@ describe("runStreamContentGate", () => {
     expect(result.readerDone).toBe(true);
   });
 
-  it("fails with prebuffer_overflow when event cap exceeded", async () => {
+  it("fails open (commits the prefix) when neutral frames exceed the event cap", async () => {
+    // 决策预算耗尽 = 门控认不出上游帧形态，属于门控自身盲区，不是供应商故障。
+    // 新契约：提交已缓冲前缀并透传（等价于没有门控时的行为），不再判死请求、不再记熔断。
     const pings = Array.from({ length: 20 }, () => PING);
     const reader = readerFromChunks(pings);
     const result = await runStreamContentGate(reader, {
       ...GATE_OPTIONS,
       prebufferEventCap: 10,
+      captureCommitMarker: true,
     });
-    expect(result.committed).toBe(false);
-    if (result.committed) return;
-    expect((result.error as StreamPrecommitError).gateReason).toBe("prebuffer_overflow");
+    expect(result.committed).toBe(true);
+    if (!result.committed) return;
+    expect(result.readerDone).toBe(false);
+    expect(result.commitMarker).toMatchObject({
+      eventName: null,
+      prebufferOverflow: true,
+      frameIndex: 11,
+    });
   });
 
-  it("fails with prebuffer_overflow when a single chunk carries more frames than the event cap", async () => {
-    // event 上限是逐帧硬上限：单 chunk 内塞满小中性帧同样触发
+  it("fails open when a single chunk carries more frames than the event cap", async () => {
+    // event 上限是逐帧硬上限：单 chunk 内塞满小中性帧同样 fail-open。
+    // 该 chunk 的字节全部属于这条流，必须完整交给下游，不能丢。
     const manyFramesOneChunk = Array.from({ length: 20 }, () => PING).join("");
     const reader = readerFromChunks([manyFramesOneChunk]);
     const result = await runStreamContentGate(reader, {
       ...GATE_OPTIONS,
       prebufferEventCap: 10,
     });
+    expect(result.committed).toBe(true);
+    if (!result.committed) return;
+    expect(await drainPrefix(result.prefixChunks)).toBe(manyFramesOneChunk);
+    expect(result.readerDone).toBe(false);
+  });
+
+  it("fail-open 只让出内容判定，不让出内存边界：event 与 byte 同时超限时仍然 fail-closed", async () => {
+    // 交叉路径：帧数刚过 event 上限、字节也同时越过 byte 上限时，不得借 fail-open 放走前缀。
+    //
+    // 构造要点（否则测不出这条路径）：
+    // - 单帧必须小于解析器上限（=prebufferByteCap），否则先抛 SseFrameBufferLimitError，
+    //   那样无论有没有 byte 检查都会 fail-closed，等于没测到。
+    // - 因此用「一个 chunk 里塞 3 个中号帧」来堆字节，而不是一个超大帧。
+    // - 该 chunk 还要低于入站 2×cap 硬上限，确保不会被前置换算拦住。
+    const mediumFrame = `event: ping\ndata: {"type":"ping","pad":"${"x".repeat(2900)}"}\n\n`;
+    const burst = mediumFrame.repeat(3);
+    const reader = readerFromChunks([...Array.from({ length: 10 }, () => PING), burst]);
+    const result = await runStreamContentGate(reader, {
+      ...GATE_OPTIONS,
+      prebufferEventCap: 10,
+      prebufferByteCap: 8000,
+    });
+
     expect(result.committed).toBe(false);
     if (result.committed) return;
+    expect(result.error).toBeInstanceOf(StreamPrecommitError);
     expect((result.error as StreamPrecommitError).gateReason).toBe("prebuffer_overflow");
+  });
+
+  it("fail-open 后 reader 上剩余的内容帧仍可继续读出（不丢尾部）", async () => {
+    // fail-open 只交出已缓冲前缀；流并没有结束，后续真内容必须照常透传。
+    const reader = readerFromChunks([
+      ...Array.from({ length: 20 }, () => PING),
+      TEXT_DELTA,
+      MESSAGE_STOP,
+    ]);
+    const result = await runStreamContentGate(reader, {
+      ...GATE_OPTIONS,
+      prebufferEventCap: 10,
+    });
+    expect(result.committed).toBe(true);
+    if (!result.committed) return;
+
+    // 前缀耗尽后继续读，应拿到未被分类的正文与终止帧。
+    const tail: string[] = [];
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      tail.push(new TextDecoder().decode(next.value));
+    }
+    const tailText = tail.join("");
+    expect(tailText).toContain("hello");
+    expect(tailText).toContain("message_stop");
+  });
+
+  it("EOF 时帧溢出同样 fail-open，并把尾部残帧一并交出", async () => {
+    // 只有让 finishVisit 成为第 cap+1 帧的来源，才真正走到 EOF 分支：
+    // 先给满 cap 个「已 dispatch」的中性帧（不触发溢出），再挂一个没有结尾空行的残帧，
+    // 它只能在 EOF 冲刷时 dispatch。
+    const frames = PING.repeat(10) + PING.trimEnd();
+    const reader = readerFromChunks([frames]);
+    const result = await runStreamContentGate(reader, {
+      ...GATE_OPTIONS,
+      prebufferEventCap: 10,
+      captureCommitMarker: true,
+    });
+
+    expect(result.committed).toBe(true);
+    if (!result.committed) return;
+    // EOF 分支：字节已全部读完，reader 归还是 done 语义。
+    expect(result.readerDone).toBe(true);
+    expect(result.prebufferOverflow).toBe(true);
   });
 
   it("commits when content arrives right at the event cap boundary", async () => {
@@ -331,6 +409,32 @@ describe("runStreamContentGate", () => {
     if (!result.committed) return;
     expect(await drainPrefix(result.prefixChunks)).toBe(reasoningFrames[0]);
     expect(result.readerDone).toBe(false);
+  });
+
+  it("openai-chat: unrecognized reasoning field names reach the client via fail-open", async () => {
+    // 回归现场：上游把推理内容放在门控不认识的字段名下，前 65 帧全部落进中性分支。
+    // 旧契约在这里判死请求并入账供应商故障——单一候选供应商时整个模型直接不可用。
+    // 新契约 fail-open 透传：中性前缀完整交给下游，后续正文帧继续从 reader 流出。
+    const frames = [
+      ...Array.from(
+        { length: 70 },
+        (_, index) => `data: {"choices":[{"delta":{"unrecognized_reasoning":"step ${index}"}}]}\n\n`
+      ),
+      'data: {"choices":[{"delta":{"content":"final answer"}}]}\n\n',
+    ];
+    const reader = readerFromChunks(frames);
+    const result = await runStreamContentGate(reader, {
+      ...GATE_OPTIONS,
+      family: "openai-chat",
+      captureCommitMarker: true,
+    });
+
+    expect(result.committed).toBe(true);
+    if (!result.committed) return;
+    expect(result.commitMarker).toMatchObject({ eventName: null, prebufferOverflow: true });
+    expect(result.readerDone).toBe(false);
+    // 前缀必须与溢出前已缓冲的 65 帧逐字节一致，不能丢字节
+    expect(await drainPrefix(result.prefixChunks)).toBe(frames.slice(0, 65).join(""));
   });
 
   it("openai-responses: commits a compaction item before response.completed", async () => {

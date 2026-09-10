@@ -258,6 +258,9 @@ export interface ProviderChainItem {
     eventName: string | null; // 触发提交的 SSE event 名
     bufferedBytes: number; // 提交时已缓冲的前缀字节数
     echoExcludedBytes: number; // 被排除出字节计数的请求回显帧字节数
+    // 决策预算（event 上限）耗尽后的 fail-open 提交：此时没有内容帧触发提交，
+    // eventName 恒为 null。用于区分「正常内容提交」与「门控认不出上游帧形态」。
+    prebufferOverflow?: boolean;
     gateWaitMs: number; // 门控等待时长（首字节到提交）
   };
 

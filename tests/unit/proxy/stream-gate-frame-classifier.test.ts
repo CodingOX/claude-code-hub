@@ -159,7 +159,7 @@ describe("classifyFrame: anthropic", () => {
 });
 
 describe("classifyFrame: openai-chat", () => {
-  it("content: delta content / reasoning / tool arguments / refusal / audio", () => {
+  it("content: delta content / reasoning aliases / tool arguments / refusal / audio", () => {
     expect(classifyFrame("openai-chat", null, '{"choices":[{"delta":{"content":"hi"}}]}')).toBe(
       "content"
     );
@@ -183,6 +183,25 @@ describe("classifyFrame: openai-chat", () => {
     expect(
       classifyFrame("openai-chat", null, '{"choices":[{"delta":{"audio":{"data":"b64"}}}]}')
     ).toBe("content");
+    // 同一个「推理内容」语义在各上游/聚合商下的字段名不统一。漏认任何一个，整段思考
+    // 前缀都会落进中性帧分支，进而把健康上游误判成中性帧洪泛。
+    expect(classifyFrame("openai-chat", null, '{"choices":[{"delta":{"reasoning":"step"}}]}')).toBe(
+      "content"
+    );
+    expect(
+      classifyFrame(
+        "openai-chat",
+        null,
+        '{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"step"}]}}]}'
+      )
+    ).toBe("content");
+    expect(classifyFrame("openai-chat", null, '{"choices":[{"delta":{"thinking":"step"}}]}')).toBe(
+      "content"
+    );
+    // 部分网关把 reasoning 提升到顶层（choices 为空）
+    expect(classifyFrame("openai-chat", null, '{"reasoning_content":"step","choices":[]}')).toBe(
+      "content"
+    );
   });
 
   it("neutral: role-only first chunk / finish_reason-only / usage-only", () => {
@@ -211,6 +230,20 @@ describe("classifyFrame: openai-chat", () => {
     expect(
       classifyFrame("openai-chat", null, '{"choices":[{"delta":{"reasoning_content":""}}]}')
     ).toBe("neutral");
+    // 新增的推理别名必须是「非空才算内容」：null / 空串 / 空数组都只是结构占位，
+    // 误判成内容会让门控在首个空占位帧就提交，提前放弃等待真内容。
+    expect(classifyFrame("openai-chat", null, '{"choices":[{"delta":{"reasoning":""}}]}')).toBe(
+      "neutral"
+    );
+    expect(classifyFrame("openai-chat", null, '{"choices":[{"delta":{"reasoning":null}}]}')).toBe(
+      "neutral"
+    );
+    expect(
+      classifyFrame("openai-chat", null, '{"choices":[{"delta":{"reasoning_details":[]}}]}')
+    ).toBe("neutral");
+    expect(classifyFrame("openai-chat", null, '{"choices":[{"delta":{"thinking":""}}]}')).toBe(
+      "neutral"
+    );
   });
 
   it("error: in-stream error payload", () => {

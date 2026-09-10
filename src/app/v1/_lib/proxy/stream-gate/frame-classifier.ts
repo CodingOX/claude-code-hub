@@ -100,9 +100,22 @@ const STREAM_SIGNALS: Record<ProtocolFamily, StreamSignal> = {
     contentRules: [
       {
         // chunk 无事件名；delta 携带 content/reasoning/tool_calls/refusal/audio 即内容
+        //
+        // 「推理内容」的字段名在不同上游/聚合商之间并不统一，这里按证据强度分两档收录：
+        // - 已实测：DeepSeek 官方用 delta.reasoning_content（#1394）；CommandCode 的 DeepSeek
+        //   套餐用 delta.reasoning + delta.reasoning_details（实测其 reasoning_tokens 可达 235，
+        //   远超默认 64 帧决策预算）。
+        // - 防御性：delta.thinking（部分网关沿用 Anthropic 式命名）、顶层 reasoning_content
+        //   （网关把推理提到 choices 之外）。
+        // 漏认的代价不对称：多认只会让内容帧提前提交，漏认会让整段「思考前缀」全部落进
+        // 中性帧分支，把健康上游误判成中性帧洪泛。
         anyPaths: [
           "choices.#.delta.content",
           "choices.#.delta.reasoning_content",
+          "choices.#.delta.reasoning",
+          "choices.#.delta.reasoning_details",
+          "choices.#.delta.thinking",
+          "reasoning_content",
           "choices.#.delta.tool_calls.#.function.arguments",
           "choices.#.delta.function_call.arguments",
           "choices.#.delta.refusal",

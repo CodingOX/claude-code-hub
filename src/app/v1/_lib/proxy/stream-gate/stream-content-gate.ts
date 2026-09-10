@@ -23,7 +23,9 @@ import { SseFrameBufferLimitError, SseFrameParser } from "./sse-frames";
  * - terminal 先于 content -> 空流失败；但 openai-responses 的干净完成（status=completed）
  *   视为成功响应直接提交，空回复是合法结果（见 isCleanResponsesCompletion）
  * - 流提前结束（无终止帧的 EOF）-> 空流失败
- * - neutral 帧入缓冲；超过 event/byte 上限 -> prebuffer_overflow 失败
+ * - neutral 帧入缓冲；event 上限（决策预算）耗尽 -> 提交已缓冲前缀并透传（fail-open，
+ *   见下方 prebuffer overflow 语义说明）
+ * - neutral 帧的 byte 上限 / 解析缓冲上限被突破 -> prebuffer_overflow 失败（内存边界）
  *   （请求回显帧不计入字节上限，见 isRequestEchoFrame）
  * - 读间隔超过 idleTimeoutMs -> idle_timeout 失败（调用方按静默超时归类）
  * - read 拒绝（首字节超时 abort / 客户端断开）-> 原样返回错误，由调用方按来源归类
@@ -106,7 +108,9 @@ export class StreamPrecommitError extends ProxyError {
  * 流，是真实的供应商侧异常。
  *
  * 其余 reason 一律计入：`gate_error` / `decode_error` 是真实上游错误帧或损坏载荷，
- * `idle_timeout` 是真实上游静默，`prebuffer_overflow` 是异常中性帧洪泛。
+ * `idle_timeout` 是真实上游静默，`prebuffer_overflow` 是中性帧把内存边界（byte 上限 /
+ * 解析缓冲上限）打爆。注意 event 上限（决策预算）耗尽**不在此列**：那属于门控认不出
+ * 上游帧形态的自身盲区，走 fail-open 提交前缀透传，不产生 error，也就不计健康度。
  */
 export function isRequestScopedGateFailure(error: unknown): boolean {
   return (
@@ -215,6 +219,11 @@ export interface StreamGateCommitMarker {
   bufferedBytes: number;
   /** 被排除出字节计数的请求回显帧字节数 */
   echoExcludedBytes: number;
+  /**
+   * 本次提交不是由内容帧触发，而是决策预算（event 上限）耗尽后的 fail-open。
+   * 为 true 时 eventName 恒为 null、frameIndex 即溢出发生的帧序号。
+   */
+  prebufferOverflow?: boolean;
 }
 
 export type StreamGateResult =
@@ -223,6 +232,13 @@ export type StreamGateResult =
       prefixChunks: Uint8Array[];
       framesSeen: number;
       readerDone: boolean;
+      /**
+       * 本次提交是决策预算耗尽后的 fail-open（门控认不出该上游的帧形态）。
+       *
+       * 与 commitMarker 解耦：高并发模式下不采集 commitMarker，但这个「分类器盲区」信号
+       * 恰恰在最忙的时候最需要，所以它是廉价布尔、始终返回。
+       */
+      prebufferOverflow: boolean;
       commitMarker: StreamGateCommitMarker | null;
       /** 前缀被下游消费或放弃后释放；所有权随 committed 结果转移。 */
       prebufferLease: StreamGatePrebufferLease | null;
@@ -279,7 +295,18 @@ export async function runStreamContentGate(
     bufferedBytes - Math.min(echoExcludedBytes, options.prebufferByteCap) >
     options.prebufferByteCap;
 
-  const commit = (eventName: string | null, readerDone: boolean): StreamGateResult => {
+  /**
+   * 提交已缓冲前缀并归还 reader 所有权。
+   *
+   * prebufferOverflow=true 表示这是一次「决策预算耗尽」的 fail-open 提交：门控认不出
+   * 上游帧形态，不能再替客户端做早期判定，于是退回无门控的透传行为。它只复用提交
+   * 路径（前缀所有权转移 + 租约收缩），不改变任何失败语义。
+   */
+  const commit = (
+    eventName: string | null,
+    readerDone: boolean,
+    prebufferOverflow = false
+  ): StreamGateResult => {
     const retainedPrefixBytes = buffered.retainedByteLength;
     const prefixChunks = buffered.take();
     // 读取期间需要覆盖 parser、输入副本和前缀的最坏峰值；提交后 parser
@@ -291,8 +318,16 @@ export async function runStreamContentGate(
       prefixChunks,
       framesSeen,
       readerDone,
+      prebufferOverflow,
       commitMarker: options.captureCommitMarker
-        ? { frameIndex: framesSeen, chunkIndex, eventName, bufferedBytes, echoExcludedBytes }
+        ? {
+            frameIndex: framesSeen,
+            chunkIndex,
+            eventName,
+            bufferedBytes,
+            echoExcludedBytes,
+            ...(prebufferOverflow ? { prebufferOverflow: true } : {}),
+          }
         : null,
       prebufferLease,
     };
@@ -374,7 +409,8 @@ export async function runStreamContentGate(
             }
             if (verdict === "terminal") sawTerminal = true;
             if (verdict === "neutral" && framesSeen > options.prebufferEventCap) {
-              trailingResult = failure("prebuffer_overflow");
+              // 决策预算耗尽：fail-open，把已缓冲前缀交还给调用方透传
+              trailingResult = commit(null, true, true);
               return false;
             }
             return true;
@@ -446,7 +482,16 @@ export async function runStreamContentGate(
             echoExcludedBytes += Buffer.byteLength(data, "utf8");
           }
           if (framesSeen > options.prebufferEventCap) {
-            frameResult = failure("prebuffer_overflow");
+            // 决策预算耗尽：这些帧全部是语法完整的 JSON，既不是 error 也不是内容。
+            // 「门控认不出上游帧形态」属于门控自身的盲区，不等于上游有病——继续判死会让
+            // 单一候选供应商场景下的健康模型整体不可用，并错误累积熔断。这里 fail-open：
+            // 提交已缓冲前缀并透传，等价于没有门控时的行为。
+            //
+            // 但 fail-open 只让出「判断内容」的责任，不让出内存边界：与 content 提交同一处理，
+            // 前缀已越过 byte 上限时仍然 fail-closed（宽松的内存上限只会被上游拿去放大内存）。
+            frameResult = exceedsByteCap()
+              ? failure("prebuffer_overflow")
+              : commit(null, false, true);
             return false;
           }
           return true;
