@@ -1,0 +1,108 @@
+name: Build and Push Image
+
+# 本仓库 (CodingOX fork) 自建的镜像构建流水线。
+#
+# 为什么不用上游的 release.yml：
+# 上游那条流水线除了构建镜像，还会自动递增版本号、生成 CHANGELOG、打 git tag、
+# 同步 main 到 dev 分支，在 fork 上跑副作用太大。这里只做一件事：build & push，
+# 因此可以放心反复手动触发。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "镜像版本号 (留空则读取仓库根目录的 VERSION 文件)"
+        required: false
+        default: ""
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+# 同一个 ref 上的重复推送只保留最新一次，避免两个 job 并发写同一个 tag
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    env:
+      # OCI label 里要写完整仓库 URL，直接内联会顶爆 YAML 行宽，收进 env 统一引用
+      IMAGE_SOURCE: "https://github.com/${{ github.repository }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # 本流水线不用 git 凭证（推 GHCR 走 GITHUB_TOKEN），关掉凭证持久化，
+          # 避免 token 被写进 .git/config 后随构建上下文带进构建缓存
+          persist-credentials: false
+
+      - name: Resolve image name and version
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          # GHCR 要求镜像路径全小写，而 owner 可能是 "CodingOX" 这种大小写混合写法
+          OWNER="${{ github.repository_owner }}"
+          OWNER=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/claude-code-hub"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+          # 版本来源优先级：手动输入 > 仓库 VERSION 文件
+          # 默认用 VERSION 文件是为了和 /api/version 路由读取的版本号保持一致，
+          # 否则镜像内会显示一个与仓库声明不符的版本，触发假的升级提示。
+          VERSION="${INPUT_VERSION}"
+          if [ -z "${VERSION}" ]; then
+            VERSION=$(cat VERSION)
+          fi
+          VERSION="${VERSION#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+          echo "镜像: ${IMAGE}"
+          echo "版本: ${VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./deploy/Dockerfile
+          # 只构建 amd64：部署目标 silicon 是 x86_64，且在原生架构上构建最快。
+          # 若要在 Mac (arm64) 上跑该镜像，改成 linux/amd64,linux/arm64 即可，
+          # 代价是 arm64 走 QEMU 模拟，构建时间大约翻倍。
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ env.IMAGE_SOURCE }}
+          # scope 与上游 release.yml 区分开，避免两个 workflow 互相冲掉构建缓存
+          cache-from: type=gha,scope=cch-image
+          cache-to: type=gha,mode=max,scope=cch-image
