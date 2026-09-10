@@ -1,9 +1,14 @@
 name: Auto Release Pipeline
 
+# 注意：此处刻意不配置 push 触发。
+#
+# 上游原本是 on.push(main)。但本仓库是自维护 fork，日常出镜像走 build-image.yml。
+# 保留 push 触发会导致每次往 main 推代码都自动：抬版本号、打 tag、创建 GitHub Release、
+# 再构建一份镜像推到 ghcr.io/<owner>/claude-code-hub，覆盖 build-image.yml 写下的 :latest 标签。
+# 两条流水线抢同一个标签，行为不可预测，还会堆出大量非预期的版本号和 Release。
+#
+# 需要正式发版时，在 Actions 页面手动触发本流水线（workflow_dispatch）即可。
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       version_type:
