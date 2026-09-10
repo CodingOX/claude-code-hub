@@ -82,6 +82,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Docker Hub 与 GHCR 的登录是分开的两次（凭证体系不同），但下面的构建只跑一次：
+      # 同一份构建产物可以同时推给任意多个 registry，写成两个 build 步骤会白白构建两遍。
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          # registry 刻意留空：默认为 docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -98,6 +106,10 @@ jobs:
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}
             ${{ steps.meta.outputs.image }}:latest
+            # Docker Hub 同镜像同标签，只是换个仓库地址（两边 tag 完全等价，互为备份）
+            ${{ vars.DOCKERHUB_USERNAME }}/claude-code-hub:${{ steps.meta.outputs.version }}
+            ${{ vars.DOCKERHUB_USERNAME }}/claude-code-hub:${{ steps.meta.outputs.sha_tag }}
+            ${{ vars.DOCKERHUB_USERNAME }}/claude-code-hub:latest
           labels: |
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
