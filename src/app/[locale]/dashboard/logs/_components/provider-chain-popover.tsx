@@ -816,6 +816,17 @@ export function ProviderChainPopover({
                   </div>
                 )}
               </div>
+              {/* 单次尝试失败时同样要能看到上游报错：否则这里只剩成功路径的详情，失败原因无处可查 */}
+              {singleRequestItem?.errorMessage && (
+                <div className="border-t border-border/50 pt-1.5">
+                  <div className="text-[10px] font-medium text-rose-600 dark:text-rose-400">
+                    {t("logs.details.errorMessage")}
+                  </div>
+                  <p className="mt-0.5 whitespace-pre-wrap break-words font-mono text-[10px] text-rose-700 dark:text-rose-300">
+                    {singleRequestItem.errorMessage}
+                  </p>
+                </div>
+              )}
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -1015,9 +1026,20 @@ export function ProviderChainPopover({
                   </div>
                   {item.errorMessage && (
                     <>
-                      <p className="text-[10px] text-muted-foreground mt-0.5 line-clamp-1">
-                        {item.errorMessage}
-                      </p>
+                      {/* 这里只能显示一行，长错误会被截断：用 tooltip 提供完整文本，
+                          否则用户只能看到错误开头，无法判断上游到底为什么失败。 */}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <p className="text-[10px] text-muted-foreground mt-0.5 line-clamp-1 cursor-help">
+                            {item.errorMessage}
+                          </p>
+                        </TooltipTrigger>
+                        <TooltipContent side="left" align="start" className="max-w-[420px]">
+                          <p className="whitespace-pre-wrap break-words text-xs">
+                            {item.errorMessage}
+                          </p>
+                        </TooltipContent>
+                      </Tooltip>
                       {typeof item.errorMessage === "string" &&
                         item.errorMessage.startsWith("FAKE_200_") && (
                           <p className="text-[10px] text-amber-700 dark:text-amber-300 mt-0.5 line-clamp-2">

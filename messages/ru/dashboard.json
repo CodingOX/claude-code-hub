@@ -442,6 +442,7 @@
           "unknown": "Условия запуска Discovery не выполнены"
         },
         "discoveryTitle": "Раунды Discovery",
+        "failuresTitle": "Причины сбоев провайдеров",
         "discoveryCompact": "{rounds} р. · {attempts} поп.",
         "routeMode": "Способ маршрутизации",
         "routeModes": {

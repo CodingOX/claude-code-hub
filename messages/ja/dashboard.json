@@ -442,6 +442,7 @@
           "unknown": "Discovery の適格条件を満たしていません"
         },
         "discoveryTitle": "Discovery ラウンド",
+        "failuresTitle": "上流の失敗理由",
         "discoveryCompact": "{rounds}R · {attempts} 回",
         "routeMode": "ルーティング方式",
         "routeModes": {

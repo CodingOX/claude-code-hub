@@ -442,6 +442,7 @@
           "unknown": "未满足 Discovery 准入条件"
         },
         "discoveryTitle": "Discovery 轮次",
+        "failuresTitle": "上游失败原因",
         "discoveryCompact": "{rounds} 轮 · {attempts} 次",
         "routeMode": "路由方式",
         "routeModes": {

@@ -442,6 +442,7 @@
           "unknown": "Eligibility requirement was not met"
         },
         "discoveryTitle": "Discovery rounds",
+        "failuresTitle": "Upstream failure reasons",
         "discoveryCompact": "{rounds}R · {attempts} tries",
         "routeMode": "Route mode",
         "routeModes": {

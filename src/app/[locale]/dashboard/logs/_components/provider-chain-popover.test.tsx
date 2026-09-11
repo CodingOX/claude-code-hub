@@ -320,6 +320,61 @@ describe("provider-chain-popover layout", () => {
     );
   });
 
+  test("exposes the full upstream error through a tooltip when the summary line is truncated", () => {
+    // 摘要行受 line-clamp-1 限制只能显示一行，完整错误必须能在 tooltip 里看到。
+    const longErrorMessage = `Provider p1 returned 400: ${Array.from(
+      { length: 10 },
+      (_, index) => `detail-${index}`
+    ).join(" ")}`;
+    const html = renderWithIntl(
+      <ProviderChainPopover
+        chain={[
+          {
+            id: 1,
+            name: "p1",
+            reason: "retry_failed",
+            statusCode: 400,
+            attemptNumber: 1,
+            errorMessage: longErrorMessage,
+          },
+          {
+            id: 2,
+            name: "p2",
+            reason: "retry_failed",
+            statusCode: 502,
+            attemptNumber: 2,
+            errorMessage: "Provider p2 returned 502: upstream timeout",
+          },
+        ]}
+        finalProvider="p1"
+      />
+    );
+
+    // 气泡里还存在其他 tooltip，因此只校验包含完整错误文本的那一个
+    const tooltipContents = html.split('data-slot="tooltip-content"').slice(1);
+    expect(tooltipContents.some((chunk) => chunk.includes(longErrorMessage))).toBe(true);
+  });
+
+  test("shows the upstream error in the single-attempt tooltip", () => {
+    // 只有一次实际尝试时气泡走精简分支（retryCount === 0），失败原因同样必须可见。
+    const html = renderWithIntl(
+      <ProviderChainPopover
+        chain={[
+          {
+            id: 1,
+            name: "only-upstream",
+            reason: "system_error",
+            statusCode: 502,
+            errorMessage: "Provider only-upstream returned 502: upstream timeout",
+          },
+        ]}
+        finalProvider="only-upstream"
+      />
+    );
+
+    expect(html).toContain("Provider only-upstream returned 502: upstream timeout");
+  });
+
   test("renders inferred status code badge when statusCodeInferred=true", () => {
     const html = renderWithIntl(
       <ProviderChainPopover

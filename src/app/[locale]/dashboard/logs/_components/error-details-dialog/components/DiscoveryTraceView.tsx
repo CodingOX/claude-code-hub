@@ -636,6 +636,16 @@ export function DiscoveryTraceView({
       ? `${t(`bindingActions.${bindingEvent.bindingAction ?? "none"}`)} · ${t(`bindingOutcomes.${bindingOutcome}`)}`
       : null;
 
+  // 失败原因汇总：直接来自供应商决策链，不依赖 trace 的 attempt 事件。
+  // 背景：Discovery 未启用时，trace 只记录 request_started/request_finished 两个事件，
+  // 竞速视图因此建不出任何 attempt 卡片；没有这个区块，用户只能看到空态提示。
+  const chainFailures = providerChain.flatMap((item, index) => {
+    const message = getChainErrorMessage(item);
+    return message
+      ? [{ key: `${item.id}-${item.attemptNumber ?? "-"}-${index}`, item, message }]
+      : [];
+  });
+
   return (
     <div className="space-y-5" data-testid="discovery-trace-view">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -687,6 +697,42 @@ export function DiscoveryTraceView({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* 上游失败原因：直接来自决策链，不依赖 trace 的 attempt 事件，
+          Discovery 未启用时也能看到每个上游各自失败的原因。 */}
+      {chainFailures.length > 0 && (
+        <div className="border-y py-3 space-y-2" data-testid="discovery-chain-failures">
+          <div className="text-xs font-medium flex items-center gap-2">
+            <XCircle className="h-3.5 w-3.5 shrink-0 text-rose-600" aria-hidden="true" />
+            {t("failuresTitle")}
+          </div>
+          <div className="space-y-2">
+            {chainFailures.map(({ key, item, message }) => (
+              <div
+                key={key}
+                className="min-w-0 rounded-md border border-rose-200 bg-rose-50 p-2 dark:border-rose-800 dark:bg-rose-950/20"
+              >
+                <div className="flex items-center justify-between gap-2 min-w-0">
+                  <span className="text-xs font-medium truncate" title={item.name}>
+                    {item.name}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                    {[
+                      item.statusCode != null ? `HTTP ${item.statusCode}` : null,
+                      item.reason ?? null,
+                    ]
+                      .filter((part) => part !== null)
+                      .join(" · ")}
+                  </span>
+                </div>
+                <pre className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background/60 p-2 text-[10px] font-mono text-rose-800 dark:text-rose-200">
+                  {message}
+                </pre>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

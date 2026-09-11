@@ -2391,6 +2391,65 @@ describe("error-details-dialog routing trace", () => {
     expect(html).toContain("3/3 active");
   });
 
+  test("lists per-upstream failure reasons when the trace has no attempt events", () => {
+    // 回归场景：Discovery 未启用时 trace 只记录 request_started/request_finished，
+    // 竞速视图建不出任何 attempt 卡片；此时仍必须能看到每个上游各自的失败原因。
+    const idleLegacyHedgeTrace: RoutingTraceV1 = {
+      version: 1,
+      mode: "legacy_hedge",
+      startedAt: 1_000,
+      updatedAt: 2_000,
+      discoveryEnabled: false,
+      eligible: false,
+      bypassReason: "disabled",
+      events: [
+        { type: "request_started", at: 1_000, elapsedMs: 0 },
+        {
+          type: "request_finished",
+          at: 2_000,
+          elapsedMs: 1_000,
+          outcome: "failed",
+          statusCode: 400,
+        },
+      ],
+    };
+    const html = renderWithIntl(
+      <ErrorDetailsDialog
+        externalOpen
+        statusCode={400}
+        errorMessage="all providers failed"
+        providerChain={[
+          {
+            id: 11,
+            name: "alpha-upstream",
+            reason: "retry_failed",
+            statusCode: 400,
+            attemptNumber: 1,
+            errorMessage: "Provider alpha-upstream returned 400: invalid_request_error",
+          },
+          {
+            id: 12,
+            name: "beta-upstream",
+            reason: "system_error",
+            statusCode: 502,
+            attemptNumber: 2,
+            errorMessage: "Provider beta-upstream returned 502: upstream timeout",
+          },
+        ]}
+        routingTrace={idleLegacyHedgeTrace}
+        sessionId="idle-hedge-session"
+      />
+    );
+
+    // 确实没有 attempt 数据：空态提示仍然存在
+    expect(html).toContain("No provider attempts were recorded");
+    // 失败原因区块补齐了每个上游各自的原因，用户不再只看到空态
+    expect(html).toContain("Upstream failure reasons");
+    expect(html).toContain("alpha-upstream");
+    expect(html).toContain("Provider alpha-upstream returned 400: invalid_request_error");
+    expect(html).toContain("Provider beta-upstream returned 502: upstream timeout");
+  });
+
   test("shows late terminal failure and Sticky binding result after a first-byte winner", () => {
     const failedTrace: RoutingTraceV1 = {
       ...discoveryTrace,
