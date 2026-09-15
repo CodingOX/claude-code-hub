@@ -1,6 +1,6 @@
 import type { ModelPrice, ModelPriceData } from "@/types/model-price";
 import type { Provider } from "@/types/provider";
-import { hasValidPriceData } from "./price-data";
+import { hasPositivePriceData, hasValidPriceData } from "./price-data";
 
 export type ResolvedPricingSource =
   | "local_manual"
@@ -423,11 +423,33 @@ function resolveDetailedFallback(candidate: ModelRecordCandidate): ResolvedPrici
     return null;
   }
 
-  // 官方节点优先,再按明细字段数排序;首选节点数据无效时继续尝试后续节点
+  // 排序分层：官方节点 -> 带正价节点 -> 明细字段数 -> 固定优先级 -> 字典序；
+  // 首选节点数据无效时继续尝试后续节点。
+  //
+  // 第二层用于隔离 Token 套餐 / 包月类渠道：这类节点单价填 0（按套餐收费，不按量计费），
+  // 明细字段数往往和真实渠道一样多甚至更多，若不降级就会凭字典序挤掉按量计费节点，
+  // 导致整批请求被计费成 0。
+  // 预计算“全 0 价”节点集合，避免排序比较器里反复扫描价格字段。
+  // 非对象节点（null / 字符串等脏数据）由后续 hasValidPriceData 兜底跳过，这里按 0 价处理即可。
+  const zeroPricedKeys = new Set(
+    Object.keys(pricingMap).filter((key) => {
+      const node = pricingMap[key];
+      if (!node || typeof node !== "object" || Array.isArray(node)) {
+        return true;
+      }
+      return !hasPositivePriceData(node as ModelPriceData);
+    })
+  );
+
   const keys = Object.keys(pricingMap).sort((a, b) => {
     const officialA = pricingMap[a]?.official === true ? 0 : 1;
     const officialB = pricingMap[b]?.official === true ? 0 : 1;
     if (officialA !== officialB) return officialA - officialB;
+
+    const zeroPricedA = zeroPricedKeys.has(a) ? 1 : 0;
+    const zeroPricedB = zeroPricedKeys.has(b) ? 1 : 0;
+    if (zeroPricedA !== zeroPricedB) return zeroPricedA - zeroPricedB;
+
     return compareDetailKeys(a, b, pricingMap);
   });
 

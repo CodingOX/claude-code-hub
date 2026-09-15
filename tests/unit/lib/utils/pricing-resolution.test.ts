@@ -225,4 +225,101 @@ describe("resolvePricingForModelRecords", () => {
       input_cost_per_token: 0.000005,
     });
   });
+
+  test("skips all-zero token-plan channels when another provider node carries a real price", () => {
+    // 真实回归场景：deepseek/deepseek-v4.1-flash 的云价格表里，
+    // alibaba-token-plan-cn（Token 套餐，单价全 0）与 crossmodel 的明细字段数相同，
+    // 修复前 0 价节点凭字典序胜出，导致整批请求计费为 0。
+    const record = makeRecord("deepseek/deepseek-v4.1-flash", {
+      mode: "chat",
+      pricing: {
+        "alibaba-token-plan-cn": {
+          provider_model_id: "deepseek-v4.1-flash",
+          input_cost_per_token: 0,
+          output_cost_per_token: 0,
+          cache_read_input_token_cost: 0,
+          cache_creation_input_token_cost: 0,
+        },
+        crossmodel: {
+          provider_model_id: "deepseek/deepseek-v4.1-flash",
+          input_cost_per_token: 0.00000027,
+          output_cost_per_token: 0.00000108,
+          cache_read_input_token_cost: 0.0000000054,
+          cache_creation_input_token_cost: 0.00000027,
+        },
+      },
+    });
+
+    const resolved = resolvePricingForModelRecords({
+      provider: {
+        id: 180,
+        name: "CCG_Gmail",
+        url: "https://api.commandcode.ai/provider/v1",
+      } as never,
+      primaryModelName: "deepseek/deepseek-v4.1-flash",
+      fallbackModelName: null,
+      primaryRecord: record,
+      fallbackRecord: null,
+    });
+
+    expect(resolved).not.toBeNull();
+    expect(resolved?.resolvedPricingProviderKey).toBe("crossmodel");
+    expect(resolved?.source).toBe("priority_fallback");
+    expect(resolved?.priceData.input_cost_per_token).toBe(0.00000027);
+  });
+
+  test("still resolves a genuinely free model whose every provider node is zero-priced", () => {
+    // 免费模型的全部渠道单价都是 0：降级排序不能让结果变成 null，否则会丢失价格来源信息。
+    const record = makeRecord("free-model", {
+      mode: "chat",
+      pricing: {
+        alpha: { input_cost_per_token: 0, output_cost_per_token: 0 },
+        beta: { input_cost_per_token: 0, output_cost_per_token: 0 },
+      },
+    });
+
+    const resolved = resolvePricingForModelRecords({
+      provider: null,
+      primaryModelName: "free-model",
+      fallbackModelName: null,
+      primaryRecord: record,
+      fallbackRecord: null,
+    });
+
+    expect(resolved).not.toBeNull();
+    expect(resolved?.source).toBe("priority_fallback");
+    expect(resolved?.priceData.input_cost_per_token).toBe(0);
+  });
+
+  test("prefers a real price over a zero-priced node that has more detail fields", () => {
+    // 0 价节点即便明细字段更多也必须让位，否则“字段最多”会盖过“真的能计费”。
+    const record = makeRecord("detail-heavy-model", {
+      mode: "chat",
+      pricing: {
+        aaa: {
+          input_cost_per_token: 0,
+          output_cost_per_token: 0,
+          cache_read_input_token_cost: 0,
+          cache_creation_input_token_cost: 0,
+          input_cost_per_token_above_200k_tokens: 0,
+          output_cost_per_token_above_200k_tokens: 0,
+        },
+        zzz: {
+          input_cost_per_token: 0.000002,
+          output_cost_per_token: 0.000008,
+        },
+      },
+    });
+
+    const resolved = resolvePricingForModelRecords({
+      provider: null,
+      primaryModelName: "detail-heavy-model",
+      fallbackModelName: null,
+      primaryRecord: record,
+      fallbackRecord: null,
+    });
+
+    expect(resolved?.resolvedPricingProviderKey).toBe("zzz");
+    expect(resolved?.priceData.input_cost_per_token).toBe(0.000002);
+  });
 });
