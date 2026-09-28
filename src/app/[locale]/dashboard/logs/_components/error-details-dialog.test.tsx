@@ -2421,7 +2421,7 @@ describe("error-details-dialog routing trace", () => {
 
   test("lists per-upstream failure reasons when the trace has no attempt events", () => {
     // 回归场景：Discovery 未启用时 trace 只记录 request_started/request_finished，
-    // 竞速视图建不出任何 attempt 卡片；此时仍必须能看到每个上游各自的失败原因。
+    // 上游会从决策链补建 attempt 卡片，失败原因展开卡片后可见。
     const idleLegacyHedgeTrace: RoutingTraceV1 = {
       version: 1,
       mode: "legacy_hedge",
@@ -2441,9 +2441,10 @@ describe("error-details-dialog routing trace", () => {
         },
       ],
     };
-    const html = renderWithIntl(
+    const { container, unmount } = renderClientWithIntl(
       <ErrorDetailsDialog
         externalOpen
+        initialTab="logic-trace"
         statusCode={400}
         errorMessage="all providers failed"
         providerChain={[
@@ -2469,13 +2470,24 @@ describe("error-details-dialog routing trace", () => {
       />
     );
 
-    // 确实没有 attempt 数据：空态提示仍然存在
-    expect(html).toContain("No provider attempts were recorded");
-    // 失败原因区块补齐了每个上游各自的原因，用户不再只看到空态
-    expect(html).toContain("Upstream failure reasons");
-    expect(html).toContain("alpha-upstream");
-    expect(html).toContain("Provider alpha-upstream returned 400: invalid_request_error");
-    expect(html).toContain("Provider beta-upstream returned 502: upstream timeout");
+    // 决策链里的失败条目即使没有对应 attempt 事件也会被补建成卡片（上游行为）：
+    // 折叠时先看到上游名与状态码，展开后才显示完整失败原因。
+    expect(container.textContent).not.toContain("No provider attempts");
+    const attempts = Array.from(container.querySelectorAll("[data-testid='discovery-attempt']"));
+    expect(attempts).toHaveLength(2);
+    const [alpha, beta] = attempts;
+    expect(alpha?.textContent).toContain("alpha-upstream");
+    expect(alpha?.textContent).toContain("HTTP 400");
+    expect(beta?.textContent).toContain("beta-upstream");
+    expect(beta?.textContent).toContain("HTTP 502");
+
+    // 展开卡片后可见上游返回的原始错误文本
+    click(alpha?.querySelector("[data-testid='discovery-attempt-toggle']") ?? null);
+    expect(alpha?.textContent).toContain(
+      "Provider alpha-upstream returned 400: invalid_request_error"
+    );
+
+    unmount();
   });
 
   test("shows late terminal failure and Sticky binding result after a first-byte winner", () => {
