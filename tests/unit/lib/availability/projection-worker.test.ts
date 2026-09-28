@@ -210,4 +210,39 @@ describe("availability projection-worker", () => {
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect(withAdvisoryLock).not.toHaveBeenCalled();
   });
+
+  it("bootstrapBackfill 给 jsonb_build_object 的数值参数加 ::int，避免 PG 拒绝未定类型参数", async () => {
+    // 回归场景（生产实测）：jsonb_build_object 的形参是 PG 的 "any" 类型，无法推断未
+    // 指定类型的参数，不加 ::int 时 PG 报
+    // "could not determine data type of parameter $1"，导致 backfill_done 永远写不进去，
+    // 每次容器启动都会重跑整个 100 天回填。
+    const executeMock = vi.fn(async (query: unknown) => {
+      const text = sqlToString(query);
+      if (text.includes("select key from projection_meta")) return [];
+      if (text.includes("with inserted as")) return [{ n: 0 }];
+      return [];
+    });
+    const withAdvisoryLock = vi.fn(async (_key: unknown, fn: () => Promise<unknown>) => ({
+      ran: true,
+      result: await fn(),
+    }));
+
+    vi.doMock("@/drizzle/db", () => ({
+      db: { execute: executeMock, transaction: vi.fn() },
+    }));
+    vi.doMock("@/lib/migrate", () => ({ withAdvisoryLock }));
+    vi.doMock("@/lib/logger", () => ({
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    }));
+
+    const { __test__ } = await import("@/lib/availability/projection-worker");
+    await __test__.bootstrapBackfill();
+
+    const insertText = executeMock.mock.calls
+      .map((c) => sqlToString(c[0]))
+      .find((t) => t.includes("insert into projection_meta"));
+    expect(insertText).toBeDefined();
+    // 两个数值参数都必须带显式类型转换
+    expect(insertText?.match(/::int/g)?.length).toBe(2);
+  });
 });

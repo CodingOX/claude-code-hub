@@ -146,6 +146,10 @@ async function bootstrapBackfill(): Promise<void> {
       }
 
       if (!state().stopRequested) {
+        // 注意：jsonb_build_object 的形参是 PG 的 "any" 类型，无法从上下文推断未指定
+        // 类型的参数；两个数值参数必须显式 ::int，否则 PG 直接报
+        // "could not determine data type of parameter $1"，backfill_done 永远写不进去，
+        // 每次容器启动都会重跑整个回填（生产实测：6.3s / 400 个 chunk）。
         await db.execute(sql`
           INSERT INTO projection_meta (key, value, updated_at)
           VALUES (
@@ -153,8 +157,8 @@ async function bootstrapBackfill(): Promise<void> {
             jsonb_build_object(
               'at', now(),
               'note', 'availability backfill',
-              'rangeDays', ${BACKFILL_RANGE_DAYS},
-              'inserted', ${inserted}
+              'rangeDays', ${BACKFILL_RANGE_DAYS}::int,
+              'inserted', ${inserted}::int
             ),
             now()
           )
